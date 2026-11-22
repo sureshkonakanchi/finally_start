@@ -205,3 +205,33 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ---------------------------------------------------------------------------
+# FinAlly
+# ---------------------------------------------------------------------------
+# Runtime SQLite database (db/.gitkeep stays tracked)
+db/*.db
+db/*.db-*
+db/*.db*
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/coverage/
+frontend/reports/
+
+# E2E tests
+test/node_modules/
+test/playwright-report/
+test/results/
+test/test-results/
+test/blob-report/
+
+# CI reports
+reports/
+backend/reports/
+*.junit.xml
+
+# Docker image archives produced by CI
+*.image.tar

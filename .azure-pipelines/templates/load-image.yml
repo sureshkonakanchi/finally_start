@@ -1,0 +1,15 @@
+# Download the image tarball produced by the Build stage and `docker load` it.
+parameters:
+  - name: artifactName
+    type: string
+    default: docker-image
+
+steps:
+  - download: current
+    artifact: ${{ parameters.artifactName }}
+    displayName: Download image artifact
+  - bash: |
+      set -euo pipefail
+      docker load -i "$(Pipeline.Workspace)/${{ parameters.artifactName }}/finally.image.tar"
+      docker image ls "$(imageRepository)"
+    displayName: docker load

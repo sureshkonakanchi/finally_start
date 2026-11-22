@@ -1,0 +1,44 @@
+# Keep the build context small and free of secrets/runtime state.
+.git
+.github
+.azure-pipelines
+.claude
+.vscode
+.idea
+**/.DS_Store
+
+.env
+.env.*
+!.env.example
+
+# Runtime data
+db/
+*.db
+*.db-*
+
+# Python
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage
+**/coverage.xml
+**/htmlcov
+backend/reports
+
+# Node / Next.js
+**/node_modules
+frontend/.next
+frontend/out
+frontend/coverage
+frontend/reports
+
+# Not needed in the image
+test/
+planning/
+deploy/
+scripts/
+reports/
+*.log

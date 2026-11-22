@@ -1,0 +1,48 @@
+# E2E test stack: the app image (LLM_MOCK, fresh throwaway DB) + a Playwright runner.
+#   docker compose -f test/docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from playwright
+# Reports land in test/playwright-report/ (HTML) and test/results/junit.xml.
+name: finally-e2e
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      LLM_MOCK: "true"
+      MASSIVE_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      FINALLY_DB_PATH: /app/db/finally.db
+    tmpfs:
+      - /app/db  # fresh, seeded database on every run
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=3).status == 200 else 1)"
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    expose:
+      - "8000"
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.65.1-noble
+    depends_on:
+      app:
+        condition: service_healthy
+    working_dir: /work
+    environment:
+      BASE_URL: http://app:8000
+      E2E_FRESH_DB: "true"
+      CI: ${CI:-}
+    volumes:
+      - ./:/work
+      - e2e-node-modules:/work/node_modules  # keep host (Windows) node_modules out of the Linux container
+    ipc: host
+    command: ["bash", "-lc", "npm ci --no-audit --no-fund && npx playwright test"]
+
+volumes:
+  e2e-node-modules:

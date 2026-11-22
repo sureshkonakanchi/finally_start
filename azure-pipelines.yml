@@ -1,0 +1,260 @@
+# FinAlly - Azure DevOps CI/CD
+#
+#   UnitTests -> Build -> E2E -> Push (ACR) -> Deploy (ACI)
+#                                 \___ main branch only ___/
+#
+# One-time setup (service connections, variable group, Azure resources): deploy/azure/README.md
+# Secrets come ONLY from the variable group `finally-secrets` (linked to the Deploy stage only,
+# so PR builds never see them).
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    exclude: ['planning/**', '*.md']
+
+pr:
+  branches:
+    include: [main]
+
+variables:
+  # --- naming (override in the pipeline UI if needed) ---
+  imageRepository: finally
+  imageTag: $(Build.BuildId)
+  nodeVersion: '20.x'
+  pythonVersion: '3.12'
+  vmImage: ubuntu-latest
+  # --- service connections (used in compile-time expressions) ---
+  acrServiceConnection: finally-acr          # Docker Registry service connection -> ACR
+  azureServiceConnection: finally-azure      # Azure Resource Manager service connection
+  deployEnvironment: finally-production      # ADO environment (configure approvals/checks there)
+  # --- Azure resources ---
+  acrName: finallyacr                        # login server = <acrName>.azurecr.io
+  acrLoginServer: $(acrName).azurecr.io
+  resourceGroup: finally-rg
+  location: eastus
+  aciName: finally-aci
+  aciDnsLabel: finally-app-$(acrName)        # must be unique within the region
+  aciCpu: '1'
+  aciMemoryGb: '1.5'
+  useAzureFiles: 'false'                     # 'true' => mount Azure Files share at /app/db
+  storageAccount: finallystorage
+  fileShare: finally-db
+  isMain: $[and(eq(variables['Build.SourceBranch'], 'refs/heads/main'), ne(variables['Build.Reason'], 'PullRequest'))]
+
+stages:
+  # ---------------------------------------------------------------------------
+  - stage: UnitTests
+    displayName: Unit tests
+    jobs:
+      - job: Backend
+        displayName: Backend (pytest + ruff)
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - template: .azure-pipelines/templates/setup-uv.yml
+            parameters:
+              pythonVersion: ${{ variables.pythonVersion }}
+          - bash: |
+              set -euo pipefail
+              mkdir -p reports
+              uv sync --frozen --extra dev
+              # JUnit report for the Tests tab (never fails), then the gating check with readable output.
+              uv run --extra dev ruff check app tests --output-format=junit > reports/ruff-junit.xml || true
+              uv run --extra dev ruff check app tests
+            workingDirectory: backend
+            displayName: ruff
+          - bash: |
+              set -euo pipefail
+              mkdir -p reports
+              uv run --extra dev pytest -q \
+                --junitxml=reports/pytest-junit.xml \
+                --cov=app --cov-report=xml:reports/coverage.xml --cov-report=term
+            workingDirectory: backend
+            displayName: pytest
+            condition: succeededOrFailed()
+            env:
+              LLM_MOCK: 'true'
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            displayName: Publish backend test results
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: 'backend/reports/*-junit.xml'
+              testRunTitle: Backend unit tests
+              mergeTestResults: true
+          - task: PublishCodeCoverageResults@2
+            condition: succeededOrFailed()
+            displayName: Publish backend coverage
+            inputs:
+              summaryFileLocation: backend/reports/coverage.xml
+
+      - job: Frontend
+        displayName: Frontend (vitest + lint)
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - task: UseNode@1
+            inputs:
+              version: $(nodeVersion)
+            displayName: Use Node $(nodeVersion)
+          - bash: npm ci --no-audit --no-fund
+            workingDirectory: frontend
+            displayName: npm ci
+          - bash: npm run lint
+            workingDirectory: frontend
+            displayName: Lint
+          - bash: |
+              set -euo pipefail
+              mkdir -p reports
+              npm test -- --reporter=default --reporter=junit --outputFile.junit=reports/vitest-junit.xml
+            workingDirectory: frontend
+            displayName: Unit tests (vitest)
+            condition: succeededOrFailed()
+            env:
+              CI: 'true'
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            displayName: Publish frontend test results
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: 'frontend/reports/*-junit.xml'
+              testRunTitle: Frontend unit tests
+
+  # ---------------------------------------------------------------------------
+  - stage: Build
+    displayName: Build image
+    dependsOn: UnitTests
+    jobs:
+      - job: DockerBuild
+        displayName: docker build
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - bash: |
+              set -euo pipefail
+              export DOCKER_BUILDKIT=1
+              docker build \
+                --label "org.opencontainers.image.revision=$(Build.SourceVersion)" \
+                --label "org.opencontainers.image.source=$(Build.Repository.Uri)" \
+                -t "$(imageRepository):$(imageTag)" .
+              mkdir -p "$(Build.ArtifactStagingDirectory)/image"
+              docker save "$(imageRepository):$(imageTag)" -o "$(Build.ArtifactStagingDirectory)/image/finally.image.tar"
+            displayName: Build and save $(imageRepository):$(imageTag)
+          - publish: $(Build.ArtifactStagingDirectory)/image
+            artifact: docker-image
+            displayName: Publish image artifact
+
+  # ---------------------------------------------------------------------------
+  - stage: E2E
+    displayName: E2E (Playwright)
+    dependsOn: Build
+    jobs:
+      - job: Playwright
+        displayName: Playwright vs built image (LLM_MOCK=true)
+        timeoutInMinutes: 30
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - template: .azure-pipelines/templates/load-image.yml
+          - task: UseNode@1
+            inputs:
+              version: $(nodeVersion)
+            displayName: Use Node $(nodeVersion)
+          - bash: bash scripts/ci/run_e2e.sh "$(imageRepository):$(imageTag)"
+            displayName: Run Playwright E2E
+            env:
+              RUN_ID: $(Build.BuildId)
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            displayName: Publish E2E test results
+            inputs:
+              testResultsFormat: JUnit
+              testResultsFiles: 'test/results/**/*.xml'
+              testRunTitle: E2E (Playwright)
+              failTaskOnFailedTests: true
+          - publish: test/playwright-report
+            artifact: playwright-report-$(System.JobAttempt)
+            condition: succeededOrFailed()
+            displayName: Publish Playwright HTML report
+          - publish: test/results
+            artifact: e2e-results-$(System.JobAttempt)
+            condition: succeededOrFailed()
+            displayName: Publish E2E results + app log
+
+  # ---------------------------------------------------------------------------
+  - stage: Push
+    displayName: Push to ACR
+    dependsOn: E2E
+    condition: and(succeeded(), eq(variables.isMain, true))
+    jobs:
+      - job: PushImage
+        displayName: docker push
+        pool:
+          vmImage: $(vmImage)
+        steps:
+          - checkout: none
+          - template: .azure-pipelines/templates/load-image.yml
+          - task: Docker@2
+            displayName: Login to ACR
+            inputs:
+              command: login
+              containerRegistry: ${{ variables.acrServiceConnection }}
+          - bash: |
+              set -euo pipefail
+              docker tag "$(imageRepository):$(imageTag)" "$(acrLoginServer)/$(imageRepository):$(imageTag)"
+              docker tag "$(imageRepository):$(imageTag)" "$(acrLoginServer)/$(imageRepository):latest"
+            displayName: Tag for ACR
+          - task: Docker@2
+            displayName: Push $(imageRepository):$(imageTag)
+            inputs:
+              command: push
+              containerRegistry: ${{ variables.acrServiceConnection }}
+              repository: $(imageRepository)
+              tags: |
+                $(imageTag)
+                latest
+
+  # ---------------------------------------------------------------------------
+  - stage: Deploy
+    displayName: Deploy to ACI
+    dependsOn: Push
+    condition: and(succeeded(), eq(variables.isMain, true))
+    variables:
+      - group: finally-secrets        # OPENROUTER_API_KEY (secret), MASSIVE_API_KEY (optional secret)
+    jobs:
+      - deployment: DeployACI
+        displayName: az container create + smoke test
+        pool:
+          vmImage: $(vmImage)
+        environment: ${{ variables.deployEnvironment }}
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - task: AzureCLI@2
+                  displayName: Deploy $(acrLoginServer)/$(imageRepository):$(imageTag)
+                  inputs:
+                    azureSubscription: ${{ variables.azureServiceConnection }}
+                    scriptType: bash
+                    scriptLocation: scriptPath
+                    scriptPath: deploy/azure/deploy-aci.sh
+                    arguments: --image $(acrLoginServer)/$(imageRepository):$(imageTag)
+                    failOnStandardError: false
+                  env:
+                    AZ_RESOURCE_GROUP: $(resourceGroup)
+                    AZ_LOCATION: $(location)
+                    ACR_NAME: $(acrName)
+                    ACI_NAME: $(aciName)
+                    ACI_DNS_LABEL: $(aciDnsLabel)
+                    ACI_CPU: $(aciCpu)
+                    ACI_MEMORY_GB: $(aciMemoryGb)
+                    AZURE_FILES: $(useAzureFiles)
+                    STORAGE_ACCOUNT: $(storageAccount)
+                    FILE_SHARE: $(fileShare)
+                    LLM_MOCK: 'false'
+                    # Secret variables reach scripts only when mapped explicitly.
+                    # (An undefined variable arrives as the literal "$(NAME)"; deploy-aci.sh ignores that.)
+                    OPENROUTER_API_KEY: $(OPENROUTER_API_KEY)
+                    MASSIVE_API_KEY: $(MASSIVE_API_KEY)

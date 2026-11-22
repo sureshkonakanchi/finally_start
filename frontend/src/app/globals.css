@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@theme {
+  --color-canvas: #0d1117;
+  --color-panel: #121923;
+  --color-raised: #18212d;
+  --color-line: #243041;
+  --color-line-strong: #33425a;
+  --color-ink: #dbe2ea;
+  --color-muted: #7b8799;
+  --color-faint: #4f5b6d;
+  --color-up: #26a668;
+  --color-down: #e0524c;
+  --color-accent: #ecad0a;
+  --color-blue: #209dd7;
+  --color-purple: #753991;
+  --color-purple-hover: #8a48a8;
+
+  --font-sans: "IBM Plex Sans Condensed", "Roboto Condensed", "Arial Narrow", system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Price flash: the class is applied on each tick (element is re-keyed so the animation restarts)
+   and the green/red wash fades out over ~500ms. */
+@keyframes flash-up-kf {
+  from {
+    background-color: rgba(38, 166, 104, 0.45);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+@keyframes flash-down-kf {
+  from {
+    background-color: rgba(224, 82, 76, 0.45);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+.flash-up {
+  animation: flash-up-kf 500ms ease-out;
+}
+.flash-down {
+  animation: flash-down-kf 500ms ease-out;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.dot-pulse {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-up,
+  .flash-down,
+  .dot-pulse {
+    animation-duration: 1ms;
+    animation-iteration-count: 1;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-blue);
+  outline-offset: 1px;
+}
+
+/* Thin, quiet scrollbars for the dense panels */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
